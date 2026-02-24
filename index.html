@@ -9,12 +9,64 @@
   <body>
     <header class="site-header">
       <h1 class="logo">Ultimate Metronome</h1>
+      <div class="volume-wrapper">
+        <span class="volume-label">-</span>
+        <input
+          id="volume-slider"
+          class="volume-slider"
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          value="100"
+          aria-label="Master volume"
+        />
+        <span class="volume-label">+</span>
+      </div>
+      <section class="presets-panel" aria-label="Saved programs">
+        <div class="presets-header">
+          <input
+            id="preset-name-input"
+            class="preset-name-input"
+            type="text"
+            maxlength="18"
+            placeholder="Preset name"
+            aria-label="Preset name"
+          />
+          <button
+            id="preset-save-btn"
+            type="button"
+          >
+            Save
+          </button>
+        </div>
+        <div
+          id="preset-list"
+          class="preset-list"
+          aria-label="Saved programs list"
+        ></div>
+      </section>
     </header>
     <main class="app">
       <div class="controls">
         <div class="controls-top">
-          <button id="toggle-btn" type="button">Start</button>
-          <p class="status" id="status-text">Stopped</p>
+          <div class="controls-top-left">
+            <button id="reset-btn" type="button">Reset</button>
+          </div>
+          <div class="controls-top-right">
+            <button id="toggle-btn" type="button">Start</button>
+            <label class="loop-toggle" for="loop-toggle">
+              <input
+                type="checkbox"
+                id="loop-toggle"
+                class="loop-toggle-input"
+                checked
+              />
+              Loop
+            </label>
+            <p class="field-error" id="field-error" aria-live="polite"></p>
+            <p class="status" id="status-text">Stopped</p>
+          </div>
         </div>
 
         <div class="tempo-controls">

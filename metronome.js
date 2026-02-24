@@ -1,6 +1,25 @@
 (() => {
   const toggleBtn = document.getElementById("toggle-btn");
+  const resetBtn = document.getElementById("reset-btn");
   const statusText = document.getElementById("status-text");
+  const loopToggle = /** @type {HTMLInputElement | null} */ (
+    document.getElementById("loop-toggle")
+  );
+  const fieldError = /** @type {HTMLParagraphElement | null} */ (
+    document.getElementById("field-error")
+  );
+  const volumeSlider = /** @type {HTMLInputElement | null} */ (
+    document.getElementById("volume-slider")
+  );
+  const presetNameInput = /** @type {HTMLInputElement | null} */ (
+    document.getElementById("preset-name-input")
+  );
+  const presetSaveBtn = /** @type {HTMLButtonElement | null} */ (
+    document.getElementById("preset-save-btn")
+  );
+  const presetListEl = /** @type {HTMLDivElement | null} */ (
+    document.getElementById("preset-list")
+  );
   const tempoRowsContainer = document.getElementById("tempo-rows");
   const addRowBtn = document.getElementById("add-row-btn");
 
@@ -15,13 +34,30 @@
   let currentTickIndexInSegment = 0;
   /** @type {HTMLElement[] | null} */
   let currentSequenceRows = null;
+  /** @type {Map<number, { bpm: number, beats: number, subdivisions: number, shuffle: boolean }>} */
+  const dynamicSegmentConfigs = new Map();
 
   const MIN_BPM = 20;
   const MAX_BPM = 300;
   const MIN_TS_TOP = 1;
   const MAX_TS_TOP = 64;
-  const MIN_TS_BOTTOM = 2;
+  const MIN_TS_BOTTOM = 1;
   const MAX_TS_BOTTOM = 64;
+  const STORAGE_KEY = "ultimate-metronome:program";
+  const STORAGE_SLOTS_KEY = "ultimate-metronome:program-slots";
+
+  function getMasterVolume() {
+    if (!volumeSlider) return 1;
+    const raw = Number(volumeSlider.value);
+    if (!Number.isFinite(raw) || Number.isNaN(raw)) return 1;
+    const clamped = Math.min(100, Math.max(0, raw));
+    if (clamped === 0) {
+      // Use a tiny positive value to avoid exponential ramps to 0,
+      // which can break the AudioContext, while still being inaudible.
+      return 0.0001;
+    }
+    return clamped / 100;
+  }
 
   function getIntervalMsFromBpm(bpm) {
     return 60_000 / bpm;
@@ -42,8 +78,13 @@
     osc.type = "square";
     osc.frequency.value = isAccent ? 1000 : 750;
 
+    const volume = getMasterVolume();
+
     gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(1.0, audioCtx.currentTime + 0.001);
+    gain.gain.exponentialRampToValueAtTime(
+      1.0 * volume,
+      audioCtx.currentTime + 0.001
+    );
     gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
 
     osc.connect(gain);
@@ -70,8 +111,13 @@
     // and unaccented main beats (1000 -> 750 -> 500).
     osc.frequency.value = 500;
 
+    const volume = getMasterVolume();
+
     gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.5, audioCtx.currentTime + 0.001);
+    gain.gain.exponentialRampToValueAtTime(
+      0.5 * volume,
+      audioCtx.currentTime + 0.001
+    );
     gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
 
     osc.connect(gain);
@@ -101,6 +147,18 @@
     }
   }
 
+  function setFieldError(message) {
+    if (fieldError) {
+      fieldError.textContent = message;
+    }
+  }
+
+  function clearFieldError() {
+    if (fieldError) {
+      fieldError.textContent = "";
+    }
+  }
+
   function syncRowBpm(row, bpm) {
     const clamped = clampBpm(bpm);
     const bpmInputEl = /** @type {HTMLInputElement | null} */ (
@@ -126,6 +184,234 @@
     } else if (audioCtx.state === "suspended") {
       audioCtx.resume();
     }
+  }
+
+  /**
+   * Serialize the current program (rows + loop + volume) from the DOM.
+   */
+  function serializeProgramFromDom() {
+    const rows = Array.from(
+      tempoRowsContainer.querySelectorAll(".tempo-row")
+    );
+
+    /** @type {any[]} */
+    const rowData = rows.map((row) => {
+      const bpmInputEl = /** @type {HTMLInputElement | null} */ (
+        row.querySelector(".bpm-input")
+      );
+      const tsTopInputEl = /** @type {HTMLInputElement | null} */ (
+        row.querySelector(".ts-top-input")
+      );
+      const tsBottomInputEl = /** @type {HTMLInputElement | null} */ (
+        row.querySelector(".ts-bottom-input")
+      );
+      const subdivisionEnableEl = /** @type {HTMLInputElement | null} */ (
+        row.querySelector(".subdivision-enable")
+      );
+      const subdivisionInputEl = /** @type {HTMLInputElement | null} */ (
+        row.querySelector(".subdivision-input")
+      );
+      const subdivisionShuffleEl = /** @type {HTMLInputElement | null} */ (
+        row.querySelector(".subdivision-shuffle")
+      );
+
+      return {
+        bpm: bpmInputEl ? bpmInputEl.value : "100",
+        tsTop: tsTopInputEl ? tsTopInputEl.value : "4",
+        tsBottom: tsBottomInputEl ? tsBottomInputEl.value : "4",
+        subdivEnabled: !!subdivisionEnableEl?.checked,
+        subdivisions: subdivisionInputEl ? subdivisionInputEl.value : "2",
+        shuffle: !!subdivisionShuffleEl?.checked,
+      };
+    });
+
+    return {
+      rows: rowData,
+      loop: !!loopToggle?.checked,
+      volume: volumeSlider ? volumeSlider.value : "100",
+    };
+  }
+
+  function saveProgramToStorage() {
+    try {
+      const data = serializeProgramFromDom();
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch {
+      // Ignore storage errors (e.g., disabled cookies)
+    }
+  }
+
+  /**
+   * Apply a serialized program object to the DOM (rows + loop + volume).
+   * @param {{ rows?: any[]; loop?: boolean; volume?: string }} program
+   * @returns {boolean}
+   */
+  function applyProgramToDom(program) {
+    if (!program || !Array.isArray(program.rows) || !program.rows.length) {
+      return false;
+    }
+
+    // Clear existing rows.
+    tempoRowsContainer.innerHTML = "";
+
+    program.rows.forEach((rowConfig) => {
+      const bpm = Number(rowConfig.bpm) || 100;
+      const tsTop = Number(rowConfig.tsTop) || 4;
+      const tsBottom = Number(rowConfig.tsBottom) || 4;
+
+      createTempoRow(bpm, tsTop, tsBottom);
+
+      const createdRow = /** @type {HTMLElement | null} */ (
+        tempoRowsContainer.lastElementChild
+      );
+      if (!createdRow) return;
+
+      const subdivisionEnableEl = /** @type {HTMLInputElement | null} */ (
+        createdRow.querySelector(".subdivision-enable")
+      );
+      const subdivisionInputEl = /** @type {HTMLInputElement | null} */ (
+        createdRow.querySelector(".subdivision-input")
+      );
+      const subdivisionShuffleEl = /** @type {HTMLInputElement | null} */ (
+        createdRow.querySelector(".subdivision-shuffle")
+      );
+
+      if (subdivisionEnableEl) {
+        subdivisionEnableEl.checked = !!rowConfig.subdivEnabled;
+      }
+      if (subdivisionInputEl && typeof rowConfig.subdivisions !== "undefined") {
+        subdivisionInputEl.value = String(rowConfig.subdivisions);
+      }
+      if (subdivisionShuffleEl) {
+        subdivisionShuffleEl.checked = !!rowConfig.shuffle;
+      }
+
+      // Re-apply subdivision state visuals.
+      const subdivisionSettingsEl = /** @type {HTMLDivElement | null} */ (
+        createdRow.querySelector(".subdivision-settings")
+      );
+      if (subdivisionEnableEl && subdivisionSettingsEl) {
+        const enabled = subdivisionEnableEl.checked;
+        subdivisionSettingsEl.classList.toggle(
+          "subdivision-settings-disabled",
+          !enabled
+        );
+        if (subdivisionInputEl) {
+          subdivisionInputEl.disabled = !enabled;
+        }
+        if (subdivisionShuffleEl) {
+          subdivisionShuffleEl.disabled = !enabled;
+        }
+      }
+    });
+
+    if (loopToggle && typeof program.loop === "boolean") {
+      loopToggle.checked = program.loop;
+    }
+
+    if (volumeSlider && typeof program.volume === "string") {
+      volumeSlider.value = program.volume;
+    }
+
+    return true;
+  }
+
+  /**
+   * Restore a saved program from storage.
+   * Returns true if something was restored, false otherwise.
+   */
+  function loadProgramFromStorage() {
+    let raw = null;
+    try {
+      raw = window.localStorage.getItem(STORAGE_KEY);
+    } catch {
+      return false;
+    }
+
+    if (!raw) return false;
+
+    /** @type {{ rows?: any[]; loop?: boolean; volume?: string } | null} */
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return false;
+    }
+
+    return applyProgramToDom(parsed);
+  }
+
+  /**
+   * ------ Program slots (saved programs) ------
+   */
+
+  /**
+   * @returns {{ id: string; name: string; createdAt: number; program: { rows: any[]; loop: boolean; volume: string } }[]}
+   */
+  function loadProgramSlots() {
+    let raw = null;
+    try {
+      raw = window.localStorage.getItem(STORAGE_SLOTS_KEY);
+    } catch {
+      return [];
+    }
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * @param {{ id: string; name: string; createdAt: number; program: { rows: any[]; loop: boolean; volume: string } }[]} slots
+   */
+  function saveProgramSlots(slots) {
+    try {
+      window.localStorage.setItem(STORAGE_SLOTS_KEY, JSON.stringify(slots));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  function renderProgramSlots() {
+    if (!presetListEl) return;
+
+    const slots = loadProgramSlots();
+    presetListEl.innerHTML = "";
+
+    slots.forEach((slot) => {
+      const rowEl = document.createElement("div");
+      rowEl.className = "preset-row";
+      rowEl.dataset.id = slot.id;
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "preset-row-name";
+      nameEl.textContent = slot.name || "Untitled";
+
+      const actionsEl = document.createElement("div");
+      actionsEl.className = "preset-row-actions";
+
+      const loadBtn = document.createElement("button");
+      loadBtn.type = "button";
+      loadBtn.textContent = "Load";
+      loadBtn.dataset.action = "load";
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.dataset.action = "delete";
+
+      actionsEl.appendChild(loadBtn);
+      actionsEl.appendChild(deleteBtn);
+
+      rowEl.appendChild(nameEl);
+      rowEl.appendChild(actionsEl);
+
+      presetListEl.appendChild(rowEl);
+    });
   }
 
   /**
@@ -177,10 +463,9 @@
 
       const baseBpm = validateBpm(bpmInputEl.value);
       if (!baseBpm) {
-        setStatus(
-          `Row ${i + 1}: tempo must be between ${MIN_BPM} and ${MAX_BPM} BPM.`,
-          "error"
-        );
+        const msg = `Row ${i + 1}: tempo must be between ${MIN_BPM} and ${MAX_BPM} BPM.`;
+        setStatus(msg, "error");
+        setFieldError(msg);
         return null;
       }
 
@@ -190,24 +475,18 @@
         tsTop < MIN_TS_TOP ||
         tsTop > MAX_TS_TOP
       ) {
-        setStatus(
-          `Row ${i + 1}: top time value must be a whole number between ${MIN_TS_TOP} and ${MAX_TS_TOP}.`,
-          "error"
-        );
+        const msg = `Row ${i + 1}: top time value must be a whole number between ${MIN_TS_TOP} and ${MAX_TS_TOP}.`;
+        setStatus(msg, "error");
+        setFieldError(msg);
         return null;
       }
 
       const tsBottom = Number.parseInt(tsBottomInputEl.value, 10);
-      if (
-        !Number.isFinite(tsBottom) ||
-        tsBottom < MIN_TS_BOTTOM ||
-        tsBottom > MAX_TS_BOTTOM ||
-        tsBottom % 2 !== 0
-      ) {
-        setStatus(
-          `Row ${i + 1}: bottom time value must be an even number between ${MIN_TS_BOTTOM} and ${MAX_TS_BOTTOM}.`,
-          "error"
-        );
+      const allowedBottoms = [1, 2, 4, 8, 16, 32, 64];
+      if (!Number.isFinite(tsBottom) || !allowedBottoms.includes(tsBottom)) {
+        const msg = `Row ${i + 1}: bottom time value must be one of 1, 2, 4, 8, 16, 32, 64.`;
+        setStatus(msg, "error");
+        setFieldError(msg);
         return null;
       }
 
@@ -225,10 +504,9 @@
           rawSubdivisions < 2 ||
           rawSubdivisions > 64
         ) {
-          setStatus(
-            `Row ${i + 1}: subdivisions must be a whole number between 2 and 64.`,
-            "error"
-          );
+        const msg = `Row ${i + 1}: subdivisions must be a whole number between 2 and 64.`;
+        setStatus(msg, "error");
+        setFieldError(msg);
           return null;
         }
         subdivisions = rawSubdivisions;
@@ -252,6 +530,123 @@
 
     currentSequenceRows = sequenceRows;
     return sequence;
+  }
+
+  /**
+   * Compute a fresh segment config for a given row index from the DOM.
+   * This is used so that edits to a row only take effect the next time
+   * that row is entered.
+   * @param {number} index
+   * @returns {{ bpm: number, beats: number, subdivisions: number, shuffle: boolean } | null}
+   */
+  function buildSegmentConfigForRow(index) {
+    if (!currentSequenceRows || !currentSequenceRows[index]) {
+      return null;
+    }
+
+    const row = currentSequenceRows[index];
+    const bpmInputEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".bpm-input")
+    );
+    const tsTopInputEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".ts-top-input")
+    );
+    const tsBottomInputEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".ts-bottom-input")
+    );
+    const subdivisionEnableEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".subdivision-enable")
+    );
+    const subdivisionInputEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".subdivision-input")
+    );
+    const subdivisionShuffleEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".subdivision-shuffle")
+    );
+
+    if (!bpmInputEl || !tsTopInputEl || !tsBottomInputEl) {
+      return null;
+    }
+
+    const rowNumber = index + 1;
+
+    const baseBpm = validateBpm(bpmInputEl.value);
+    if (!baseBpm) {
+      const msg = `Row ${rowNumber}: tempo must be between ${MIN_BPM} and ${MAX_BPM} BPM.`;
+      setStatus(msg, "error");
+      setFieldError(msg);
+      return null;
+    }
+
+    const tsTop = Number.parseInt(tsTopInputEl.value, 10);
+    if (
+      !Number.isFinite(tsTop) ||
+      tsTop < MIN_TS_TOP ||
+      tsTop > MAX_TS_TOP
+    ) {
+      const msg = `Row ${rowNumber}: top time value must be a whole number between ${MIN_TS_TOP} and ${MAX_TS_TOP}.`;
+      setStatus(msg, "error");
+      setFieldError(msg);
+      return null;
+    }
+
+    const tsBottom = Number.parseInt(tsBottomInputEl.value, 10);
+    const allowedBottoms = [1, 2, 4, 8, 16, 32, 64];
+    if (!Number.isFinite(tsBottom) || !allowedBottoms.includes(tsBottom)) {
+      const msg = `Row ${rowNumber}: bottom time value must be one of 1, 2, 4, 8, 16, 32, 64.`;
+      setStatus(msg, "error");
+      setFieldError(msg);
+      return null;
+    }
+
+    const effectiveBpm = baseBpm * (tsBottom / 4);
+    let subdivisions = 1;
+    let shuffle = false;
+
+    if (subdivisionEnableEl && subdivisionEnableEl.checked) {
+      const rawSubdivisions = Number.parseInt(
+        subdivisionInputEl?.value ?? "2",
+        10
+      );
+      if (
+        !Number.isFinite(rawSubdivisions) ||
+        rawSubdivisions < 2 ||
+        rawSubdivisions > 64
+      ) {
+        const msg = `Row ${rowNumber}: subdivisions must be a whole number between 2 and 64.`;
+        setStatus(msg, "error");
+        setFieldError(msg);
+        return null;
+      }
+      subdivisions = rawSubdivisions;
+      shuffle = !!subdivisionShuffleEl?.checked;
+    }
+
+    return {
+      bpm: effectiveBpm,
+      beats: tsTop,
+      subdivisions,
+      shuffle,
+    };
+  }
+
+  /**
+   * Get a segment config for the given index, caching it for the duration
+   * of the time we are inside that row. When we exit the row, the cache
+   * entry is cleared so that edits are picked up the next time we enter.
+   * @param {number} index
+   * @returns {{ bpm: number, beats: number, subdivisions: number, shuffle: boolean } | null}
+   */
+  function getSegmentConfig(index) {
+    if (dynamicSegmentConfigs.has(index)) {
+      return dynamicSegmentConfigs.get(index) ?? null;
+    }
+    const config = buildSegmentConfigForRow(index);
+    if (!config) {
+      return null;
+    }
+    dynamicSegmentConfigs.set(index, config);
+    return config;
   }
 
   function clearActiveRowIndicators() {
@@ -318,17 +713,37 @@
     currentSegmentIndex = 0;
     currentTickIndexInSegment = 0;
     currentSequenceRows = null;
+    dynamicSegmentConfigs.clear();
     toggleBtn.textContent = "Start";
     setStatus("Stopped");
   }
 
+  function resetProgramToDefaults() {
+    if (isRunning) {
+      stopMetronome();
+    }
+
+    // Clear all rows and recreate a single default row.
+    tempoRowsContainer.innerHTML = "";
+    createTempoRow(100, 4, 4);
+
+    clearFieldError();
+    setStatus("Program ready.");
+  }
+
   function runClickAndAdvance() {
-    if (!isRunning || !currentSequence) return;
+    if (!isRunning || !currentSequenceRows) return;
 
     // Find the next segment that still has ticks to play.
     while (true) {
-      const segment = currentSequence[currentSegmentIndex];
+      if (!currentSequenceRows[currentSegmentIndex]) {
+        stopMetronome();
+        return;
+      }
+
+      const segment = getSegmentConfig(currentSegmentIndex);
       if (!segment) {
+        // Error has already been reported in buildSegmentConfigForRow.
         stopMetronome();
         return;
       }
@@ -338,6 +753,9 @@
       const totalTicksInSegment = beats * subdivisions;
 
       if (currentTickIndexInSegment >= totalTicksInSegment) {
+        // We are leaving this segment; clear its cached dynamic config so
+        // that any edits are picked up the next time we enter it.
+        dynamicSegmentConfigs.delete(currentSegmentIndex);
         // Move to the next segment and reset tick index, then re-check.
         currentSegmentIndex += 1;
         currentTickIndexInSegment = 0;
@@ -385,10 +803,26 @@
         nextTickIndex = 0;
       }
 
-      if (!currentSequence[nextSegmentIndex]) {
-        // Schedule final stop after the last tick interval.
+      if (!currentSequenceRows[nextSegmentIndex]) {
+        // End of the programmed sequence: either loop from the beginning
+        // or stop, depending on the loop toggle.
         currentTimeoutId = window.setTimeout(() => {
-          stopMetronome();
+          // If the user stopped manually while the timeout was pending,
+          // do nothing.
+          if (!isRunning || !currentSequence) {
+            return;
+          }
+
+          const shouldLoop = !!loopToggle?.checked;
+
+          if (shouldLoop) {
+            currentSegmentIndex = 0;
+            currentTickIndexInSegment = 0;
+            clearActiveRowIndicators();
+            runClickAndAdvance();
+          } else {
+            stopMetronome();
+          }
         }, tickIntervalMs);
         return;
       }
@@ -455,16 +889,30 @@
     if (bpmInputEl) {
       bpmInputEl.addEventListener("input", () => {
         const bpm = validateBpm(bpmInputEl.value);
-        if (!bpm) return;
+        if (!bpm) {
+          bpmInputEl.classList.add("input-error");
+          setFieldError("Tempo must be an integer between 20 and 300 BPM.");
+          return;
+        }
+        bpmInputEl.classList.remove("input-error");
+        clearFieldError();
         syncRowBpm(row, bpm);
+        saveProgramToStorage();
       });
     }
 
     if (bpmSliderEl) {
       bpmSliderEl.addEventListener("input", () => {
         const bpm = validateBpm(bpmSliderEl.value);
-        if (!bpm) return;
+        if (!bpm) {
+          if (bpmInputEl) bpmInputEl.classList.add("input-error");
+          setFieldError("Tempo must be an integer between 20 and 300 BPM.");
+          return;
+        }
+        if (bpmInputEl) bpmInputEl.classList.remove("input-error");
+        clearFieldError();
         syncRowBpm(row, bpm);
+        saveProgramToStorage();
       });
     }
 
@@ -473,6 +921,7 @@
         (bpmInputEl && validateBpm(bpmInputEl.value)) ?? 120;
       const next = clampBpm(current + delta);
       syncRowBpm(row, next);
+      saveProgramToStorage();
     }
 
     if (bpmUpEl) {
@@ -496,18 +945,114 @@
         if (subdivisionShuffleEl) {
           subdivisionShuffleEl.disabled = !enabled;
         }
+        saveProgramToStorage();
       };
 
       subdivisionEnableEl.addEventListener("change", applySubdivisionState);
       applySubdivisionState();
     }
 
+    if (subdivisionInputEl) {
+      subdivisionInputEl.addEventListener("input", () => {
+        const raw = Number.parseInt(subdivisionInputEl.value, 10);
+        if (!Number.isFinite(raw) || raw < 2 || raw > 64) {
+          subdivisionInputEl.classList.add("input-error");
+          setFieldError("Subdivisions must be an integer between 2 and 64.");
+          return;
+        }
+        subdivisionInputEl.classList.remove("input-error");
+        clearFieldError();
+        saveProgramToStorage();
+      });
+    }
+
     if (deleteBtnEl) {
       deleteBtnEl.addEventListener("click", () => {
-        if (isRunning) {
+        const indexInSequence =
+          currentSequenceRows?.indexOf(row) ?? -1;
+
+        if (
+          isRunning &&
+          currentSequenceRows &&
+          currentSequenceRows[currentSegmentIndex] === row
+        ) {
+          // If the currently playing row is deleted, stop the metronome.
           stopMetronome();
+          row.remove();
+          return;
         }
+
         row.remove();
+
+        // If we removed a non-current row while running, keep playing
+        // but update our internal row list and cached configs so that
+        // on the next time we "would have" reached that row, it is
+        // correctly skipped.
+        if (currentSequenceRows && indexInSequence !== -1) {
+          // Rebuild the sequence rows from the DOM to keep indices aligned.
+          currentSequenceRows = Array.from(
+            tempoRowsContainer.querySelectorAll(".tempo-row")
+          );
+
+          if (isRunning) {
+            // If the removed row was before the current one, shift the
+            // current segment index left so we stay on the same logical row.
+            if (indexInSequence < currentSegmentIndex) {
+              currentSegmentIndex = Math.max(0, currentSegmentIndex - 1);
+            }
+
+            // Clear any cached configs for rows at or after the removed
+            // index so that future passes rebuild them from the DOM.
+            dynamicSegmentConfigs.forEach((_, key) => {
+              if (key >= indexInSequence) {
+                dynamicSegmentConfigs.delete(key);
+              }
+            });
+          }
+        }
+
+        saveProgramToStorage();
+      });
+    }
+
+    // Save when time signature values change.
+    const tsTopInputEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".ts-top-input")
+    );
+    const tsBottomInputEl = /** @type {HTMLInputElement | null} */ (
+      row.querySelector(".ts-bottom-input")
+    );
+    if (tsTopInputEl) {
+      tsTopInputEl.addEventListener("input", () => {
+        const value = Number.parseInt(tsTopInputEl.value, 10);
+        if (
+          !Number.isFinite(value) ||
+          value < MIN_TS_TOP ||
+          value > MAX_TS_TOP
+        ) {
+          tsTopInputEl.classList.add("input-error");
+          setFieldError("Top time value must be an integer between 1 and 64.");
+          return;
+        }
+        tsTopInputEl.classList.remove("input-error");
+        clearFieldError();
+        saveProgramToStorage();
+      });
+    }
+    if (tsBottomInputEl) {
+      tsBottomInputEl.addEventListener("input", () => {
+        const value = Number.parseInt(tsBottomInputEl.value, 10);
+        const allowedBottoms = [1, 2, 4, 8, 16, 32, 64];
+        if (!Number.isFinite(value) || !allowedBottoms.includes(value)) {
+          tsBottomInputEl.classList.add("input-error");
+          setFieldError(
+            "Bottom time value must be one of 1, 2, 4, 8, 16, 32, 64."
+          );
+          return;
+        }
+        tsBottomInputEl.classList.remove("input-error");
+        clearFieldError();
+        saveProgramToStorage();
       });
     }
   }
@@ -619,6 +1164,18 @@
     tempoRowsContainer.appendChild(row);
     syncRowBpm(row, initialBpm);
     setupTempoRow(row);
+
+    // If the metronome is running, make sure the internal row list
+    // includes this newly added row so that it will be reached
+    // naturally later in the program (or on the next loop) without
+    // restarting.
+    if (isRunning && currentSequenceRows) {
+      currentSequenceRows = Array.from(
+        tempoRowsContainer.querySelectorAll(".tempo-row")
+      );
+    }
+
+    saveProgramToStorage();
   }
 
   toggleBtn.addEventListener("click", () => {
@@ -628,6 +1185,12 @@
       startProgrammedMetronome();
     }
   });
+
+  if (resetBtn) {
+    resetBtn.addEventListener("click", () => {
+      resetProgramToDefaults();
+    });
+  }
 
   // Allow spacebar to toggle the metronome when focus
   // is not inside a text/input control (so it doesn't
@@ -661,6 +1224,89 @@
       startProgrammedMetronome();
     }
   });
+
+  if (loopToggle) {
+    loopToggle.addEventListener("change", saveProgramToStorage);
+  }
+
+  if (volumeSlider) {
+    volumeSlider.addEventListener("input", saveProgramToStorage);
+  }
+
+  if (presetSaveBtn) {
+    presetSaveBtn.addEventListener("click", () => {
+      const rawName = presetNameInput ? presetNameInput.value.trim() : "";
+      if (!rawName || rawName.length > 18) {
+        setFieldError("Preset name must be 1–18 characters.");
+        if (presetNameInput) {
+          presetNameInput.classList.add("input-error");
+        }
+        return;
+      }
+      if (presetNameInput) {
+        presetNameInput.classList.remove("input-error");
+      }
+      clearFieldError();
+
+      const name = rawName;
+      const program = serializeProgramFromDom();
+      const now = Date.now();
+
+      let slots = loadProgramSlots();
+      const id = `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+      slots.push({
+        id,
+        name,
+        createdAt: now,
+        program,
+      });
+
+      // Keep only the 10 most recent slots.
+      if (slots.length > 10) {
+        slots = slots
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .slice(0, 10);
+      }
+
+      saveProgramSlots(slots);
+      renderProgramSlots();
+
+      if (presetNameInput) {
+        presetNameInput.value = "";
+      }
+    });
+  }
+
+  if (presetListEl) {
+    presetListEl.addEventListener("click", (event) => {
+      const target = /** @type {HTMLElement} */ (event.target);
+      if (!(target instanceof HTMLElement)) return;
+
+      const action = target.dataset.action;
+      if (!action) return;
+
+      const rowEl = target.closest(".preset-row");
+      if (!rowEl || !rowEl.dataset.id) return;
+
+      const id = rowEl.dataset.id;
+      let slots = loadProgramSlots();
+      const slot = slots.find((s) => s.id === id);
+      if (!slot) return;
+
+      if (action === "load") {
+        const applied = applyProgramToDom(slot.program);
+        if (applied) {
+          saveProgramToStorage();
+          setStatus(`Program loaded: ${slot.name || "Untitled"}.`);
+        }
+      } else if (action === "delete") {
+        slots = slots.filter((s) => s.id !== id);
+        saveProgramSlots(slots);
+        renderProgramSlots();
+      }
+    });
+  }
 
   if (addRowBtn) {
     addRowBtn.addEventListener("click", () => {
@@ -698,21 +1344,31 @@
   const initialRows = Array.from(
     tempoRowsContainer.querySelectorAll(".tempo-row")
   );
-  if (initialRows.length) {
-    initialRows.forEach((row) => {
-      const bpmInputEl = /** @type {HTMLInputElement | null} */ (
-        row.querySelector(".bpm-input")
-      );
-      const initialBpm =
-        (bpmInputEl && validateBpm(bpmInputEl.value)) ?? 120;
-      syncRowBpm(row, initialBpm);
-      setupTempoRow(row);
-    });
-    setStatus("Program ready.");
+
+  const restored = loadProgramFromStorage();
+
+  if (!restored) {
+    if (initialRows.length) {
+      initialRows.forEach((row) => {
+        const bpmInputEl = /** @type {HTMLInputElement | null} */ (
+          row.querySelector(".bpm-input")
+        );
+        const initialBpm =
+          (bpmInputEl && validateBpm(bpmInputEl.value)) ?? 120;
+        syncRowBpm(row, initialBpm);
+        setupTempoRow(row);
+      });
+      setStatus("Program ready.");
+    } else {
+      createTempoRow(100, 4);
+      setStatus("Program ready.");
+    }
   } else {
-    createTempoRow(100, 4);
-    setStatus("Program ready.");
+    setStatus("Program restored.");
   }
+
+  // Render any existing saved slots on load.
+  renderProgramSlots();
 })();
 
 (() => {
@@ -722,6 +1378,9 @@
   const bpmSlider = document.getElementById("bpm-slider");
   const bpmUpBtn = document.getElementById("bpm-up");
   const bpmDownBtn = document.getElementById("bpm-down");
+  const volumeSlider = /** @type {HTMLInputElement | null} */ (
+    document.getElementById("volume-slider")
+  );
 
   /** @type {AudioContext | null} */
   let audioCtx = null;
@@ -731,6 +1390,19 @@
 
   const MIN_BPM = 20;
   const MAX_BPM = 300;
+
+  function getMasterVolume() {
+    if (!volumeSlider) return 1;
+    const raw = Number(volumeSlider.value);
+    if (!Number.isFinite(raw) || Number.isNaN(raw)) return 1;
+    const clamped = Math.min(100, Math.max(0, raw));
+    if (clamped === 0) {
+      // Use a tiny positive value to avoid exponential ramps to 0,
+      // which can break the AudioContext, while still being inaudible.
+      return 0.0001;
+    }
+    return clamped / 100;
+  }
 
   function getIntervalMsFromBpm(bpm) {
     return (60_000 / bpm);
@@ -747,8 +1419,13 @@
     osc.type = "square";
     osc.frequency.value = 1000;
 
+    const volume = getMasterVolume();
+
     gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(1.0, audioCtx.currentTime + 0.001);
+    gain.gain.exponentialRampToValueAtTime(
+      1.0 * volume,
+      audioCtx.currentTime + 0.001
+    );
     gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
 
     osc.connect(gain);
