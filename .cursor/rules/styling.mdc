@@ -1,0 +1,6 @@
+---
+description: Styling guidelines for consistent, accessible UI
+alwaysApply: true
+---
+Do not use blue/purple gradient as a primary color when designing the app.
+Do not use rounded corners when designing any boxes, buttons and similar, unless explicitly asked to. 

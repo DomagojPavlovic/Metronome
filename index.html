@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ultimate Metronome</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <h1 class="logo">Ultimate Metronome</h1>
+    </header>
+    <main class="app">
+      <div class="controls">
+        <div class="controls-top">
+          <button id="toggle-btn" type="button">Start</button>
+          <p class="status" id="status-text">Stopped</p>
+        </div>
+
+        <div class="tempo-controls">
+          <label class="tempo-label">Tempo Program</label>
+          <div id="tempo-rows">
+            <div class="tempo-row">
+              <div class="row-indicator">
+                <div class="row-indicator-dot"></div>
+              </div>
+              <div class="bpm-group">
+                <input
+                  class="bpm-input"
+                  type="number"
+                  min="20"
+                  max="300"
+                  step="1"
+                  value="100"
+                />
+                <div class="bpm-step-buttons">
+                  <button
+                    type="button"
+                    class="bpm-up"
+                    aria-label="Increase tempo"
+                  >
+                    ▲
+                  </button>
+                  <button
+                    type="button"
+                    class="bpm-down"
+                    aria-label="Decrease tempo"
+                  >
+                    ▼
+                  </button>
+                </div>
+                <input
+                  class="bpm-slider"
+                  type="range"
+                  min="20"
+                  max="300"
+                  step="1"
+                  value="100"
+                />
+              </div>
+              <div class="time-signature">
+                <input
+                  class="time-input ts-top-input"
+                  type="number"
+                  min="1"
+                  max="64"
+                  step="1"
+                  value="4"
+                  aria-label="Time signature top value"
+                />
+                <div class="time-divider"></div>
+                <input
+                  class="time-input ts-bottom-input"
+                  type="number"
+                  min="2"
+                  max="64"
+                  step="2"
+                  value="4"
+                  aria-label="Time signature bottom value"
+                />
+              </div>
+              <div class="subdivision-controls">
+                <label class="subdivision-toggle">
+                  <input
+                    type="checkbox"
+                    class="subdivision-enable"
+                    aria-label="Enable subdivisions"
+                  />
+                  Subdiv
+                </label>
+                <div class="subdivision-settings">
+                  <input
+                    class="subdivision-input"
+                    type="number"
+                    min="2"
+                    max="64"
+                    step="1"
+                    value="2"
+                    aria-label="Number of subdivisions"
+                  />
+                  <label class="shuffle-toggle">
+                    <input
+                      type="checkbox"
+                      class="subdivision-shuffle"
+                      aria-label="Enable shuffle subdivisions"
+                    />
+                    Shuffle
+                  </label>
+                </div>
+              </div>
+              <div class="row-delete">
+                <button
+                  type="button"
+                  class="row-delete-btn"
+                  aria-label="Remove tempo row"
+                ></button>
+              </div>
+            </div>
+          </div>
+          <button id="add-row-btn" type="button" aria-label="Add tempo row">
+            +
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <script src="metronome.js"></script>
+  </body>
+</html>
