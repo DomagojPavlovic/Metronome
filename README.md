@@ -9,3 +9,5 @@ How do i use this?
 > go top right > press code > download zip > extract to wherever you want it > double click on index.html
 
 fully vibecoded, glhf
+
+or rather go to https://sylaei.com/complex-metronome and use a better, simpler version
